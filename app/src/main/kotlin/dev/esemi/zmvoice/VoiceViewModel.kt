@@ -67,7 +67,6 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun handleRecognized(text: String, alternatives: List<String> = emptyList()) {
         if (text.isBlank()) {
-            Log.d(TAG, "recognized: <blank>")
             _state.value = VoiceState.Idle
             return
         }

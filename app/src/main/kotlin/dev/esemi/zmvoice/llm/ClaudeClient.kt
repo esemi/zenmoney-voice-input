@@ -115,9 +115,6 @@ class ClaudeClient(
             }
         }.toString()
 
-        Log.d(TAG, "system prompt:\n$systemPrompt")
-        Log.d(TAG, "user utterance: \"$userUtterance\"")
-
         val request = Request.Builder()
             .url("https://api.anthropic.com/v1/messages")
             .addHeader("x-api-key", apiKey)
