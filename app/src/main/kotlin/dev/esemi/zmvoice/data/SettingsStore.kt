@@ -19,7 +19,10 @@ data class Settings(
     val zenDiffFetchedAt: Long,
 )
 
-class SettingsStore(private val context: Context) {
+class SettingsStore(
+    private val context: Context,
+    private val crypto: CryptoBox = CryptoBox(),
+) {
 
     private object Keys {
         val zen = stringPreferencesKey("zenmoney_token")
@@ -31,8 +34,12 @@ class SettingsStore(private val context: Context) {
 
     val settings: Flow<Settings> = context.dataStore.data.map { it.toSettings() }
 
-    suspend fun setZenmoneyToken(value: String) = context.dataStore.edit { it[Keys.zen] = value }
-    suspend fun setAnthropicToken(value: String) = context.dataStore.edit { it[Keys.anth] = value }
+    suspend fun setZenmoneyToken(value: String) = context.dataStore.edit {
+        it[Keys.zen] = crypto.encrypt(value)
+    }
+    suspend fun setAnthropicToken(value: String) = context.dataStore.edit {
+        it[Keys.anth] = crypto.encrypt(value)
+    }
     suspend fun setDefaultAccount(id: String) = context.dataStore.edit { it[Keys.acc] = id }
     suspend fun setZenDiff(json: String, fetchedAt: Long) = context.dataStore.edit {
         it[Keys.diff] = json
@@ -40,10 +47,16 @@ class SettingsStore(private val context: Context) {
     }
 
     private fun Preferences.toSettings() = Settings(
-        zenmoneyToken = this[Keys.zen].orEmpty(),
-        anthropicToken = this[Keys.anth].orEmpty(),
+        zenmoneyToken = readSecret(this[Keys.zen]),
+        anthropicToken = readSecret(this[Keys.anth]),
         defaultAccountId = this[Keys.acc].orEmpty(),
         zenDiffJson = this[Keys.diff].orEmpty(),
         zenDiffFetchedAt = this[Keys.diffAt] ?: 0L,
     )
+
+    /** Расшифровать, либо вернуть как есть (миграция со старого plain-формата). */
+    private fun readSecret(stored: String?): String {
+        if (stored.isNullOrEmpty()) return ""
+        return crypto.decryptOrNull(stored) ?: stored
+    }
 }

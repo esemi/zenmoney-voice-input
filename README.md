@@ -78,9 +78,9 @@ adb logcat '*:S' ZmVoice:V ZmVoice.Claude:V AndroidRuntime:E
 
 ## Безопасность
 
-Токены лежат в `DataStore` без шифрования — нормально для своего
-телефона, чужому давать не стоит. Если надо жёстче — оборачивай в
-`EncryptedSharedPreferences` или Android Keystore.
+Токены шифруются AES-256/GCM перед записью в `DataStore`. Ключ
+шифрования лежит в Android Keystore (алиас `zmvoice_master`), достать
+его без root и unlocked-устройства нельзя.
 
 ## Известные ограничения
 
@@ -94,10 +94,6 @@ adb logcat '*:S' ZmVoice:V ZmVoice.Claude:V AndroidRuntime:E
 
 - [ ] **Скрыть токены за звёздочками** в настройках — сейчас видны
       открытым текстом.
-- [ ] **Зашифровать хранилище токенов** — переехать с обычного
-      `DataStore` на `EncryptedSharedPreferences` или Android Keystore,
-      чтобы ключ Anthropic и токен ZenMoney не лежали открытым текстом
-      на диске.
 - [ ] **Убрать категории доходов** из списка для модели и выпадашки —
       фильтровать по `showOutcome` в `ZenRepository.toSnapshot()`.
 - [ ] **Подкрасить кнопки на экране подтверждения** — «Отмена»
