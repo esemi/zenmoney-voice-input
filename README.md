@@ -40,6 +40,150 @@ Debug-APK появится в `app/build/outputs/apk/debug/app-debug.apk`,
 applicationId — `dev.esemi.zmvoice.debug` (можно ставить рядом с
 релизной версией).
 
+## Установка и запуск на устройстве через adb
+
+`adb` лежит в `$ANDROID_HOME/platform-tools/` — добавь в `PATH` или
+вызывай по полному пути.
+
+### 1. Подготовить устройство
+
+- **Реальный телефон**: включи **Developer options** (тапнуть 7 раз по
+  Build number в About phone) → включи **USB debugging**. Подключи по
+  USB и подтверди RSA-fingerprint на телефоне.
+- **Эмулятор**: подними AVD с системным образом, в котором есть Google
+  Play Services (иначе не заработает онлайн-распознавание речи).
+
+Проверить, что устройство видно:
+
+```bash
+adb devices
+# List of devices attached
+# R5CRA0XXXXX     device
+```
+
+Если устройств больше одного — добавляй `-s <serial>` к каждой команде
+`adb`.
+
+### 2. Поставить и запустить debug-сборку
+
+Самый короткий путь — одной gradle-таской:
+
+```bash
+./gradlew installDebug
+adb shell am start -n dev.esemi.zmvoice.debug/dev.esemi.zmvoice.MainActivity
+```
+
+Либо вручную из готового APK:
+
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+`-r` переустанавливает поверх существующей версии без потери данных.
+Если меняется подпись (например, ставишь debug поверх release) —
+снеси старую сборку: `adb uninstall dev.esemi.zmvoice.debug`.
+
+### 3. Выдать разрешение на микрофон без UI
+
+Удобно для быстрой проверки записи без ручного тапанья по диалогу:
+
+```bash
+adb shell pm grant dev.esemi.zmvoice.debug android.permission.RECORD_AUDIO
+```
+
+### 4. Снести / переустановить начисто
+
+```bash
+adb uninstall dev.esemi.zmvoice.debug
+# или сбросить данные, не сноса:
+adb shell pm clear dev.esemi.zmvoice.debug
+```
+
+`pm clear` чистит DataStore — токены придётся вводить заново.
+
+## Дебаг через adb
+
+### Логи приложения
+
+`Log.d/e/...` из кода летит в `logcat`. Самый простой фильтр —
+по PID процесса приложения:
+
+```bash
+adb logcat --pid=$(adb shell pidof -s dev.esemi.zmvoice.debug)
+```
+
+Если нужен полноценный поток с момента запуска (поймать падение на
+старте) — почисть буфер и стартани приложение:
+
+```bash
+adb logcat -c
+adb shell am start -n dev.esemi.zmvoice.debug/dev.esemi.zmvoice.MainActivity
+adb logcat '*:S' AndroidRuntime:E ZmVoice:V SpeechRecognizer:V OkHttp:V
+```
+
+Полезные теги в этом проекте:
+- `AndroidRuntime` — нативные крэши и необработанные исключения.
+- `SpeechRecognizer` — системный движок распознавания (ошибки
+  `ERROR_NO_MATCH`, `ERROR_NETWORK` и т.п.).
+- `OkHttp` — HTTP-логи Retrofit/OkHttp в debug-сборке (если включён
+  `HttpLoggingInterceptor` на уровне `BODY`).
+
+### HTTP-трафик к Claude и ZenMoney
+
+Оба клиента ходят по HTTPS. Чтобы вытащить тело запросов/ответов:
+смотри логи `OkHttp` (см. выше) — это проще всего. Если нужен полный
+MITM (например, посмотреть заголовки `X-Anthropic-*`), поднимай
+**mitmproxy** / **Charles** и направляй устройство через прокси:
+
+```bash
+# Поднять mitmproxy на хосте, порт 8080
+mitmproxy -p 8080
+
+# Прокинуть TCP-порт хоста на устройство (либо настроить Wi-Fi-proxy в
+# системных настройках устройства)
+adb reverse tcp:8080 tcp:8080
+```
+
+Чтобы Android доверял CA mitmproxy, нужно положить его сертификат в
+системный store — на реальном устройстве это требует root, на
+эмуляторе делается через `-writable-system`. Для разовой проверки
+проще логировать `OkHttp` через `HttpLoggingInterceptor`.
+
+### Подключить отладчик из Android Studio
+
+1. Открыть проект в Android Studio.
+2. Run → **Attach Debugger to Android Process** → выбрать
+   `dev.esemi.zmvoice.debug`.
+3. Точки останова работают только в debug-варианте
+   (`isDebuggable = true` ставится автоматически).
+
+Альтернатива из терминала — `adb jdwp` покажет PID процесса, к
+которому можно подключиться `jdb`-ом, но это редко кому надо.
+
+### Снять снимок состояния
+
+```bash
+# Скриншот в файл
+adb exec-out screencap -p > screen.png
+
+# Запись экрана (макс. 3 минуты, MP4)
+adb shell screenrecord /sdcard/zmvoice.mp4
+# Ctrl+C → выгрузить:
+adb pull /sdcard/zmvoice.mp4
+
+# Дамп иерархии view (для разбора кривого UI)
+adb shell uiautomator dump /sdcard/ui.xml && adb pull /sdcard/ui.xml
+```
+
+### Тяжёлая артиллерия: bugreport
+
+Если что-то падает невоспроизводимо — снять полный `bugreport`
+(включает logcat, dumpsys, tombstones):
+
+```bash
+adb bugreport ./bugreport.zip
+```
+
 ## Релизная сборка и публикация в Google Play
 
 Google Play требует **AAB** (Android App Bundle), подписанный твоим
@@ -190,6 +334,38 @@ keytool -list -v -keystore ~/keys/zmvoice-upload.jks -alias zmvoice-upload
 Токены лежат в обычном `DataStore Preferences` без шифрования. Это
 ок для личного устройства, но **не** клади приложение на чужой телефон.
 Если нужно — оберни в `EncryptedSharedPreferences` / Android Keystore.
+
+## TODO
+
+- [ ] **Скрыть токены за звёздочками** на экране настроек (Anthropic
+      API key, ZenMoney token) — сейчас лежат plain-текстом в
+      `OutlinedTextField`. Добавить `visualTransformation =
+      PasswordVisualTransformation()` + кнопку «👁» для показа.
+- [ ] **Убрать категории доходов** из списка для LLM и из dropdown на
+      ConfirmScreen. ZenMoney в `tag.showIncome`/`tag.showOutcome`
+      хранит, для какого типа тег применим — фильтровать в
+      `ZenRepository.toSnapshot()` или прямо в `ConfirmScreen`/
+      `ClaudeClient`. Сейчас при расходе предлагает «Зарплата» и
+      прочую дичь.
+- [ ] **Подкрасить кнопки на ConfirmScreen** — «Отмена» в нейтральный/
+      красноватый, «Записать» в зелёный (или брендовый `primary`).
+      Сейчас обе серые `OutlinedButton`/`Button`, легко промахнуться.
+- [ ] **Приличный главный экран** — текущий RecordScreen это голая
+      кнопка посреди пустого Column. Добавить состояние «последняя
+      транзакция», подсказку с примером фразы, индикатор уровня
+      сигнала с микрофона (RmsChanged уже приходит, просто не
+      используется).
+- [ ] **Починить тап на иконку приложения** — после первого запуска
+      повторный тап по лаунчер-иконке создаёт новый таск вместо того,
+      чтобы вернуть в существующий. Скорее всего нужно
+      `android:launchMode="singleTask"` или `singleInstance` вместо
+      текущего `singleTop` + проверить `taskAffinity`.
+- [ ] **Укоротить системный промпт** для Claude. Сейчас в него летят
+      все ~150 тегов плоским списком — это 1-2 тыс. токенов на каждый
+      запрос. Варианты: убрать заведомо неподходящие (incomeOnly),
+      сократить formatting, использовать prompt caching через
+      `cache_control` (тогда снапшот тегов кэшируется на стороне
+      Anthropic между вызовами).
 
 ## Известные ограничения
 

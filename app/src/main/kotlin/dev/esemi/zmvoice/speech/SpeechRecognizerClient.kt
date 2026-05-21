@@ -16,11 +16,20 @@ sealed interface SpeechEvent {
     data object Ready : SpeechEvent
     data object Beginning : SpeechEvent
     data class Partial(val text: String) : SpeechEvent
-    data class Final(val text: String) : SpeechEvent
+    data class Final(val text: String, val alternatives: List<String> = emptyList()) : SpeechEvent
     data class Error(val code: Int, val message: String) : SpeechEvent
 }
 
 class SpeechRecognizerClient(private val context: Context) {
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var activeRecognizer: SpeechRecognizer? = null
+
+    /** Попросить движок завершить ввод и отдать финальный результат. */
+    fun finishListening() {
+        val rec = activeRecognizer ?: return
+        mainHandler.post { runCatching { rec.stopListening() } }
+    }
 
     fun listen(languageTag: String = "ru-RU"): Flow<SpeechEvent> = callbackFlow {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
@@ -33,8 +42,16 @@ class SpeechRecognizerClient(private val context: Context) {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, languageTag)
+            putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, languageTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+            // Отключаем VAD-таймауты: слушаем, пока юзер держит кнопку.
+            // Системный движок может всё равно срезать, но мы выкручиваем потолок.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 60_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 60_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 60_000L)
         }
 
         val recognizerRef = arrayOfNulls<SpeechRecognizer>(1)
@@ -42,6 +59,7 @@ class SpeechRecognizerClient(private val context: Context) {
         main.post {
             val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
             recognizerRef[0] = recognizer
+            activeRecognizer = recognizer
             recognizer.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
                     trySend(SpeechEvent.Ready)
@@ -62,7 +80,11 @@ class SpeechRecognizerClient(private val context: Context) {
 
                 override fun onResults(results: Bundle?) {
                     val texts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    trySend(SpeechEvent.Final(texts?.firstOrNull().orEmpty()))
+                        ?.filter { it.isNotBlank() }
+                        ?: emptyList()
+                    val best = texts.firstOrNull().orEmpty()
+                    val rest = texts.drop(1)
+                    trySend(SpeechEvent.Final(best, rest))
                     close()
                 }
 
@@ -82,6 +104,7 @@ class SpeechRecognizerClient(private val context: Context) {
                     stopListening()
                     destroy()
                 }
+                if (activeRecognizer === recognizerRef[0]) activeRecognizer = null
             }
         }
     }

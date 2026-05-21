@@ -1,5 +1,6 @@
 package dev.esemi.zmvoice.llm
 
+import android.util.Log
 import dev.esemi.zmvoice.zenmoney.ZenAccount
 import dev.esemi.zmvoice.zenmoney.ZenTag
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -26,7 +27,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
-import java.time.LocalDate
 
 class ClaudeParseException(message: String) : Exception(message)
 
@@ -56,14 +56,14 @@ class ClaudeClient(
     suspend fun parse(
         apiKey: String,
         userUtterance: String,
+        alternatives: List<String> = emptyList(),
         accounts: List<ZenAccount>,
         tags: List<ZenTag>,
         defaultAccountId: String?,
     ): ParsedTransaction {
         require(apiKey.isNotBlank()) { "Anthropic API key is empty" }
 
-        val today = LocalDate.now().toString()
-        val systemPrompt = buildSystemPrompt(today, accounts, tags, defaultAccountId)
+        val systemPrompt = buildSystemPrompt(accounts, tags, defaultAccountId, alternatives)
 
         val toolSchema = buildJsonObject {
             put("name", "record_transaction")
@@ -71,14 +71,6 @@ class ClaudeClient(
             putJsonObject("input_schema") {
                 put("type", "object")
                 putJsonObject("properties") {
-                    putJsonObject("type") {
-                        put("type", "string")
-                        putJsonArray("enum") {
-                            add(JsonPrimitive("outcome"))
-                            add(JsonPrimitive("income"))
-                        }
-                        put("description", "Тип: outcome (расход) или income (доход)")
-                    }
                     putJsonObject("amount") {
                         put("type", "number")
                         put("description", "Сумма транзакции, положительное число")
@@ -93,14 +85,16 @@ class ClaudeClient(
                     }
                     putJsonObject("tag_id") {
                         put("type", "string")
-                        put("description", "ID наиболее подходящего тега. При сомнении пропускай")
+                        put("description", "ID наиболее подходящего тега из списка tags. Обязательно выбери один — при сомнении бери самый близкий по смыслу")
                     }
                     putJsonObject("comment") {
                         put("type", "string")
                         put("description", "Короткий комментарий, до 60 символов")
                     }
                 }
-                putJsonArray("required") { add(JsonPrimitive("type")) }
+                putJsonArray("required") {
+                    add(JsonPrimitive("tag_id"))
+                }
             }
         }
 
@@ -121,6 +115,9 @@ class ClaudeClient(
             }
         }.toString()
 
+        Log.d(TAG, "system prompt:\n$systemPrompt")
+        Log.d(TAG, "user utterance: \"$userUtterance\"")
+
         val request = Request.Builder()
             .url("https://api.anthropic.com/v1/messages")
             .addHeader("x-api-key", apiKey)
@@ -130,6 +127,7 @@ class ClaudeClient(
             .build()
 
         val responseText = http.await(request)
+        Log.d(TAG, "response: $responseText")
         val parsed: MessagesResponse = json.decodeFromString(MessagesResponse.serializer(), responseText)
 
         parsed.error?.let { throw ClaudeParseException("Claude error: ${it.type}: ${it.message}") }
@@ -140,10 +138,7 @@ class ClaudeClient(
             ?: throw ClaudeParseException("Empty tool_use input")
 
         return ParsedTransaction(
-            type = when (input["type"]?.jsonPrimitive?.contentOrNull) {
-                "income" -> TransactionType.INCOME
-                else -> TransactionType.OUTCOME
-            },
+            type = TransactionType.OUTCOME,
             amount = input["amount"]?.jsonPrimitive?.doubleOrNull,
             currency = input["currency"]?.jsonPrimitive?.contentOrNull?.uppercase(),
             accountId = input["account_id"]?.jsonPrimitive?.contentOrNull?.ifBlank { null },
@@ -153,32 +148,41 @@ class ClaudeClient(
     }
 
     private fun buildSystemPrompt(
-        today: String,
         accounts: List<ZenAccount>,
         tags: List<ZenTag>,
         defaultAccountId: String?,
+        alternatives: List<String>,
     ): String {
-        val accountLines = accounts.joinToString("\n") { a ->
-            "- id=${a.id} title=\"${a.title}\" currency=${a.currency ?: "?"} archive=${a.archive}"
+        val accountLines = accounts.filter { !it.archive }.joinToString("\n") { a ->
+            "- id=${a.id} title=\"${a.title}\" currency=${a.currency ?: "?"}"
         }
         val tagsForPrompt = tags.filter { !it.archive }.take(150)
         val tagLines = tagsForPrompt.joinToString("\n") { t ->
             val parent = t.parentTitle?.let { " parent=\"$it\"" }.orEmpty()
             "- id=${t.id} title=\"${t.title}\"$parent"
         }
+        val altBlock = if (alternatives.isEmpty()) "" else {
+            val lines = alternatives.joinToString("\n") { "- \"$it\"" }
+            """
+
+            Альтернативные варианты распознавания этой же фразы (от того же распознавателя речи, могут быть точнее основной):
+            $lines
+            Используй их, чтобы восстановить смысл, если основная фраза выглядит обрезанной или нелогичной.
+            """.trimIndent()
+        }
         return """
-            Ты парсишь короткие голосовые команды о денежных тратах и доходах в структурированную транзакцию ZenMoney.
-            Сегодня: $today.
+            Ты парсишь короткие голосовые команды на русском языке о денежных тратах (расходах) в структурированную транзакцию ZenMoney.
 
             ОБЯЗАТЕЛЬНО вызови инструмент record_transaction. Не пиши текстовый ответ.
 
             Правила:
-            - Если не сказано иное — type=outcome (расход).
+            - Любая фраза — это расход. Доходы в этой версии не поддерживаются, считай всё расходом.
             - amount — число в основной валюте, без копеек если копейки не названы.
-            - Если валюта не названа — currency=RUB.
+            - Если валюта не названа — currency=CZK.
             - account_id выбирай из списка accounts. Если непонятно — используй default_account_id=${defaultAccountId ?: "<не задан>"}.
-            - tag_id выбирай из списка tags только если ясно. При сомнениях оставляй пустым.
+            - tag_id ОБЯЗАТЕЛЬНО выбирай из списка tags — всегда один, наиболее подходящий по смыслу. Пустым не оставляй.
             - comment — компактная версия исходной фразы, до 60 символов.
+            $altBlock
 
             accounts:
             ${accountLines.ifBlank { "<нет>" }}
@@ -190,6 +194,7 @@ class ClaudeClient(
 
     companion object {
         const val MODEL = "claude-haiku-4-5-20251001"
+        private const val TAG = "ZmVoice.Claude"
     }
 }
 

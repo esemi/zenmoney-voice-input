@@ -49,6 +49,8 @@ class ZenRepository(
         if (amount <= 0) throw ZenMoneyException("Amount must be positive")
 
         val now = Instant.now().toEpochMilli() / 1000
+        val userComment = parsed.comment?.trim()?.takeIf { it.isNotEmpty() }
+        val comment = if (userComment != null) "$userComment ($COMMENT_TAG)" else COMMENT_TAG
         val tx = ZenTransactionDto(
             id = UUID.randomUUID().toString(),
             user = snapshot.userId,
@@ -62,7 +64,7 @@ class ZenRepository(
             created = now,
             changed = now,
             tag = parsed.tagId?.let { listOf(it) },
-            comment = parsed.comment,
+            comment = comment,
         )
         client.diff(
             token = s.zenmoneyToken,
@@ -73,6 +75,10 @@ class ZenRepository(
             ),
         )
         return tx.id
+    }
+
+    private companion object {
+        const val COMMENT_TAG = "from zmvoice"
     }
 }
 

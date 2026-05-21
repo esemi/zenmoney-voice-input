@@ -14,7 +14,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
@@ -30,7 +29,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.esemi.zmvoice.VoiceState
 import dev.esemi.zmvoice.VoiceViewModel
-import dev.esemi.zmvoice.llm.TransactionType
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,20 +54,6 @@ fun ConfirmScreen(
         Text("«${confirm.original}»", style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(16.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = parsed.type == TransactionType.OUTCOME,
-                onClick = { viewModel.setType(TransactionType.OUTCOME) },
-                label = { Text("Расход") },
-            )
-            FilterChip(
-                selected = parsed.type == TransactionType.INCOME,
-                onClick = { viewModel.setType(TransactionType.INCOME) },
-                label = { Text("Доход") },
-            )
-        }
-
-        Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             value = parsed.amount?.let { formatAmount(it) } ?: "",
             onValueChange = { input ->
@@ -110,14 +94,6 @@ fun ConfirmScreen(
             onClear = { viewModel.updateParsed { it.copy(tagId = null) } },
         )
 
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = parsed.comment.orEmpty(),
-            onValueChange = { v -> viewModel.updateParsed { it.copy(comment = v.ifBlank { null }) } },
-            label = { Text("Комментарий") },
-            modifier = Modifier.fillMaxWidth(),
-        )
-
         Spacer(Modifier.height(24.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -138,7 +114,7 @@ fun ConfirmScreen(
 }
 
 @Composable
-private fun DropdownField(
+internal fun DropdownField(
     label: String,
     current: String,
     options: List<Pair<String, String>>,

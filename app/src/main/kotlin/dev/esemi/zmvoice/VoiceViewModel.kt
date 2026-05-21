@@ -1,6 +1,7 @@
 package dev.esemi.zmvoice
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.esemi.zmvoice.llm.ParsedTransaction
@@ -50,7 +51,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                         val cur = _state.value
                         if (cur is VoiceState.Listening) _state.value = cur.copy(partial = event.text)
                     }
-                    is SpeechEvent.Final -> handleRecognized(event.text)
+                    is SpeechEvent.Final -> handleRecognized(event.text, event.alternatives)
                     is SpeechEvent.Error -> _state.value = VoiceState.Error(event.message, VoiceState.Idle)
                     SpeechEvent.Ready, SpeechEvent.Beginning -> Unit
                 }
@@ -59,23 +60,18 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun stopListening() {
-        listenJob?.cancel()
-        listenJob = null
-        val cur = _state.value
-        if (cur is VoiceState.Listening) {
-            if (cur.partial.isBlank()) {
-                _state.value = VoiceState.Idle
-            } else {
-                handleRecognized(cur.partial)
-            }
-        }
+        if (_state.value !is VoiceState.Listening) return
+        // Не отменяем listenJob — ждём, пока движок отдаст onResults со всеми N-best.
+        container.speech.finishListening()
     }
 
-    private fun handleRecognized(text: String) {
+    private fun handleRecognized(text: String, alternatives: List<String> = emptyList()) {
         if (text.isBlank()) {
+            Log.d(TAG, "recognized: <blank>")
             _state.value = VoiceState.Idle
             return
         }
+        Log.d(TAG, "recognized: \"$text\" alternatives=$alternatives")
         _state.value = VoiceState.Parsing(text)
         viewModelScope.launch {
             runCatching {
@@ -86,6 +82,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                     container.claude.parse(
                         apiKey = s.anthropicToken,
                         userUtterance = text,
+                        alternatives = alternatives,
                         accounts = snapshot.accounts,
                         tags = snapshot.tags,
                         defaultAccountId = s.defaultAccountId.ifBlank { null },
@@ -141,5 +138,9 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setType(type: TransactionType) {
         updateParsed { it.copy(type = type) }
+    }
+
+    private companion object {
+        const val TAG = "ZmVoice"
     }
 }
